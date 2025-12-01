@@ -1,0 +1,11 @@
+{
+  "name": "nodeapp",
+  "version" : "1.0.0",
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  }
+}
