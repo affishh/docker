@@ -2,82 +2,107 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY = "myregistry.com"
-        IMAGE = "myapp"
-        APP_DIR = "configuration_management"
+        DOCKER_REGISTRY = "myregistry.com"
+        APP_NAME = "myapp"
+        BLUE_CONTAINER = "blue-${APP_NAME}"
+        GREEN_CONTAINER = "green-${APP_NAME}"
+        IMAGE_TAG = "latest"
+        NODEAPP_DIR = "nodeapp" // folder containing Dockerfile
     }
 
     stages {
 
         stage('Checkout Code') {
             steps {
-                checkout([$class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    userRemoteConfigs: [[url: 'https://github.com/affishh/docker.git']]
-                ])
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                dir(APP_DIR) {
-                    sh 'npm install'
-                }
-            }
-        }
-
-        stage('Run Unit Tests') {
-            steps {
-                dir(APP_DIR) {
-                    sh 'npm test'
-                }
+                checkout scm
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                dir(APP_DIR) {
-                    sh 'docker build -t $REGISTRY/$IMAGE:green .'
+                script {
+                    sh """
+                    # Ensure Buildx is available
+                    docker buildx create --use || true
+                    docker buildx build --platform linux/amd64 -t ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG} ${NODEAPP_DIR}
+                    """
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                script {
+                    sh """
+                    docker run --rm ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG} npm test || exit 1
+                    """
                 }
             }
         }
 
         stage('Push Docker Image') {
             steps {
-                sh 'docker push $REGISTRY/$IMAGE:green'
+                withCredentials([usernamePassword(credentialsId: 'docker-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                    echo $DOCKER_PASS | docker login ${DOCKER_REGISTRY} -u $DOCKER_USER --password-stdin
+                    docker push ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
             }
         }
 
         stage('Deploy GREEN Environment') {
             steps {
-                sh '''
-                docker stop myapp-green || true
-                docker rm myapp-green || true
-                docker run -d --name myapp-green -p 5001:5000 $REGISTRY/$IMAGE:green
-                '''
+                script {
+                    sh """
+                    # Remove previous green container if exists
+                    docker rm -f ${GREEN_CONTAINER} || true
+                    # Run new green container
+                    docker run -d --name ${GREEN_CONTAINER} -p 8081:3000 ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
             }
         }
 
-        stage('Health Check GREEN') {
+        stage('Smoke Test GREEN') {
             steps {
-                sh '''
-                echo "Checking GREEN app..."
-                sleep 5
-                curl -f http://localhost:5001 || exit 1
-                '''
+                script {
+                    sh """
+                    for i in {1..5}; do
+                        curl -s -f http://localhost:8081/ && exit 0 || sleep 5
+                    done
+                    exit 1
+                    """
+                }
             }
         }
 
-        stage('Switch BLUE → GREEN (Blue-Green Deployment)') {
+        stage('Switch Traffic BLUE → GREEN') {
             steps {
-                sh '''
-                docker stop myapp-blue || true
-                docker rm myapp-blue || true
-                docker tag $REGISTRY/$IMAGE:green $REGISTRY/$IMAGE:blue
-                docker run -d --name myapp-blue -p 5000:5000 $REGISTRY/$IMAGE:blue
-                '''
+                script {
+                    sh """
+                    # Stop old blue container
+                    docker stop ${BLUE_CONTAINER} || true
+                    # Rename green → blue
+                    docker rename ${GREEN_CONTAINER} ${BLUE_CONTAINER}
+                    # Run blue container on production port
+                    docker run -d --name ${BLUE_CONTAINER} -p 8080:3000 ${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
             }
         }
+    }
 
+    post {
+        success {
+            echo "Deployment successful – Blue environment updated!"
+        }
+        failure {
+            echo "Deployment failed – rolling back to previous Blue environment"
+            sh """
+            docker stop ${GREEN_CONTAINER} || true
+            docker start ${BLUE_CONTAINER} || true
+            """
+        }
     }
 }
