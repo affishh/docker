@@ -1,0 +1,85 @@
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "myregistry.com"
+        IMAGE = "myapp"
+        BLUE_PORT = "8080"
+        GREEN_PORT = "8081"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git 'https://github.com/affishh/docker/tree/main/configuration_management'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                docker build -t $REGISTRY/$IMAGE:latest .
+                """
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh """
+                docker run --rm $REGISTRY/$IMAGE:latest pytest tests/
+                """
+            }
+        }
+
+        stage('Push Image') {
+            steps {
+                sh """
+                docker login $REGISTRY -u user -p password
+                docker push $REGISTRY/$IMAGE:latest
+                """
+            }
+        }
+
+        stage('Deploy GREEN Environment') {
+            steps {
+                sh """
+                docker rm -f green || true
+
+                docker run -d --name green -p ${GREEN_PORT}:80 $REGISTRY/$IMAGE:latest
+                """
+            }
+        }
+
+        stage('Smoke Test GREEN') {
+            steps {
+                sh """
+                echo "Testing GREEN..."
+                curl -f http://localhost:${GREEN_PORT}/health
+                """
+            }
+        }
+
+        stage('Switch Traffic BLUE → GREEN') {
+            steps {
+                sh """
+                echo "Switching Traffic..."
+
+                # Stop BLUE environment
+                docker rm -f blue || true
+
+                # Rename GREEN as BLUE (now live)
+                docker rename green blue
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Blue-Green Deployment Completed Successfully!"
+        }
+        failure {
+            echo "Deployment Failed – Blue Environment Still Active!"
+        }
+    }
+}
