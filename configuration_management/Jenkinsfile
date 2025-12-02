@@ -2,86 +2,82 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY = "docker.io/affishh"
-        IMAGE = "bluegreenapp"
-        BLUE_PORT = "8080"
-        GREEN_PORT = "8081"
+        REGISTRY = "myregistry.com"
+        IMAGE = "myapp"
+        APP_DIR = "configuration_management"
     }
 
     stages {
 
         stage('Checkout Code') {
             steps {
-                git 'https://github.com/affishh/docker.git'
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[url: 'https://github.com/affishh/docker.git']]
+                ])
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                dir(APP_DIR) {
+                    sh 'npm install'
+                }
+            }
+        }
+
+        stage('Run Unit Tests') {
+            steps {
+                dir(APP_DIR) {
+                    sh 'npm test'
+                }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                docker build -t $REGISTRY/$IMAGE:latest .
-                """
+                dir(APP_DIR) {
+                    sh 'docker build -t $REGISTRY/$IMAGE:green .'
+                }
             }
         }
 
-        stage('Run Tests') {
+        stage('Push Docker Image') {
             steps {
-                sh """
-                docker run --rm $REGISTRY/$IMAGE:latest npm test
-                """
-            }
-        }
-
-        stage('Push Image') {
-            steps {
-                sh """
-                echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-                docker push $REGISTRY/$IMAGE:latest
-                """
+                sh 'docker push $REGISTRY/$IMAGE:green'
             }
         }
 
         stage('Deploy GREEN Environment') {
             steps {
-                sh """
-                docker rm -f green || true
-
-                docker run -d --name green -p ${GREEN_PORT}:3000 $REGISTRY/$IMAGE:latest
-                """
+                sh '''
+                docker stop myapp-green || true
+                docker rm myapp-green || true
+                docker run -d --name myapp-green -p 5001:5000 $REGISTRY/$IMAGE:green
+                '''
             }
         }
 
-        stage('Smoke Test GREEN') {
+        stage('Health Check GREEN') {
             steps {
-                sh """
-                echo "Testing GREEN..."
-                sleep 3
-                curl -f http://localhost:${GREEN_PORT}/health
-                """
+                sh '''
+                echo "Checking GREEN app..."
+                sleep 5
+                curl -f http://localhost:5001 || exit 1
+                '''
             }
         }
 
-        stage('Switch Traffic BLUE → GREEN') {
+        stage('Switch BLUE → GREEN (Blue-Green Deployment)') {
             steps {
-                sh """
-                echo "Switching Traffic..."
-
-                # Remove old BLUE
-                docker rm -f blue || true
-
-                # Promote GREEN to BLUE (becomes live)
-                docker rename green blue
-                """
+                sh '''
+                docker stop myapp-blue || true
+                docker rm myapp-blue || true
+                docker tag $REGISTRY/$IMAGE:green $REGISTRY/$IMAGE:blue
+                docker run -d --name myapp-blue -p 5000:5000 $REGISTRY/$IMAGE:blue
+                '''
             }
         }
-    }
 
-    post {
-        success {
-            echo "Blue-Green Deployment Completed Successfully!"
-        }
-        failure {
-            echo "Deployment Failed – Blue Environment Still Active!"
-        }
     }
 }

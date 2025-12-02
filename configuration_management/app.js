@@ -13,6 +13,6 @@ app.get("/health", (req, res) => {
     res.json({ status: "UP" });
 });
 
-app.listen(80, () => {
+app.listen(5000, () => {
     console.log("App running on port 80");
 });
