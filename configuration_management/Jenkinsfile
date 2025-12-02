@@ -19,7 +19,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh """
-                docker build -t $REGISTRY/$IMAGE:latest .
+                ddocker build -t $REGISTRY/$IMAGE:latest nodeapp/
                 """
             }
         }
@@ -28,7 +28,7 @@ pipeline {
             steps {
                 sh """
                 echo "Running tests..."
-                docker run --rm $REGISTRY/$IMAGE:latest npm test
+                ocker run --rm $REGISTRY/$IMAGE:latest npm test
                 """
             }
         }
