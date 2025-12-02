@@ -19,7 +19,8 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh """
-                docker build -t myregistry.com/myapp:latest .
+                docker build -t $REGISTRY/$IMAGE:latest nodeapp/
+
                 """
             }
         }
